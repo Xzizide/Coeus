@@ -1,19 +1,31 @@
 import os
 import ollama
 from dotenv import load_dotenv
+from memory import ConversationMemory
 
 load_dotenv()
 
 class Coeus:
     def __init__(self):
         self.model = os.getenv("MODEL_NAME")
-        self.system_prompt = "You are a helpful assistant named Coeus. You have a quirky and a little ironic personality. You are also short and concise with your answers."
+        self.base_system_prompt = "You are a helpful assistant named Coeus. You are also short and concise with your answers but you always try to answer truthfully. You are very much into meme culture."
+        self.memory = ConversationMemory()
 
-    def chat(self, message):
+    def _build_system_prompt(self, user_message: str) -> str:
+        relevant_memories = self.memory.search_memories(user_message, n_results=5)
+        memory_context = self.memory.format_memories_for_prompt(relevant_memories)
+
+        if memory_context:
+            return f"{self.base_system_prompt}\n\n{memory_context}"
+        return self.base_system_prompt
+
+    def chat(self, message: str):
+        system_prompt = self._build_system_prompt(message)
+
         messages = [
             {
                 'role': 'system',
-                'content': self.system_prompt
+                'content': system_prompt
             }
         ]
 
@@ -27,10 +39,22 @@ class Coeus:
             full_response += content
             yield content
 
+        self.memory.add_memory(message, full_response)
+
 if __name__ == "__main__":
     coeus = Coeus()
 
     while True:
-        for chunk in coeus.chat(input("")):
+        user_input = input("\nYou: ")
+        if user_input.lower() == "/clear":
+            count = coeus.memory.clear_memories()
+            print(f"Cleared {count} memories.")
+            continue
+        if user_input.lower() == "/count":
+            print(f"Memory count: {coeus.memory.get_memory_count()}")
+            continue
+
+        print("Coeus: ", end="")
+        for chunk in coeus.chat(user_input):
             print(chunk, end="", flush=True)
         print("")
