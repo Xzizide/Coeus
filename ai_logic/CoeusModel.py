@@ -27,6 +27,7 @@ Use web_search for current info, then give a hilarious response based on what yo
 
     def clear_history(self):
         self.conversation_history = []
+        return self.memory.start_new_session()
 
     def _add_to_history(self, role: str, content: str):
         self.conversation_history.append({"role": role, "content": content})
