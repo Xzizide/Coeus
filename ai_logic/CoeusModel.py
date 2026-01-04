@@ -2,10 +2,10 @@ import os
 import json
 import ollama
 from dotenv import load_dotenv
-from memory import ConversationMemory
-from tools import ToolRegistry
-from builtin_tools import register_all_builtin_tools
-from rag import DocumentRAG
+from ai_logic.memory import ConversationMemory
+from ai_logic.tools import ToolRegistry
+from ai_logic.builtin_tools import register_all_builtin_tools
+from ai_logic.rag import DocumentRAG
 
 load_dotenv()
 
@@ -97,7 +97,12 @@ Use web_search for current info, then give a hilarious response based on what yo
 
         return messages
 
-    def chat(self, message: str, on_tool_call=None):
+    def chat(self, message: str):
+        """
+        Chat with streaming response. Yields dictionaries:
+        - {"type": "tool_call", "name": str, "args": dict} during tool execution
+        - {"type": "content", "text": str} for streamed response chunks
+        """
         system_prompt = self._build_system_prompt(message)
 
         self._add_to_history("user", message)
@@ -117,36 +122,51 @@ Use web_search for current info, then give a hilarious response based on what yo
                     stream=False,
                     options={'num_ctx':4096},
                 )
+
+                msg = response.get("message", {})
+                tool_calls = msg.get("tool_calls")
+
+                if tool_calls:
+                    for tc in tool_calls:
+                        yield {
+                            "type": "tool_call",
+                            "name": tc.get("function", {}).get("name"),
+                            "args": tc.get("function", {}).get("arguments", {})
+                        }
+
+                    messages = self._process_tool_calls(tool_calls, messages)
+                    continue
+
+                # No more tool calls - stream the final response
+                # Re-query without tools to get streaming
+                stream = ollama.chat(
+                    model=self.model,
+                    messages=messages,
+                    stream=True,
+                    options={'num_ctx':4096}
+                )
+                full_response = ""
+                for chunk in stream:
+                    content = chunk["message"]["content"]
+                    full_response += content
+                    yield {"type": "content", "text": content}
+                self._add_to_history("assistant", full_response)
+                self.memory.add_memory(message, full_response)
+                return
+
             else:
+                # No tools available - just stream directly
                 stream = ollama.chat(model=self.model, messages=messages, stream=True, options={'num_ctx':4096})
                 full_response = ""
                 for chunk in stream:
                     content = chunk["message"]["content"]
                     full_response += content
-                    yield content
+                    yield {"type": "content", "text": content}
                 self._add_to_history("assistant", full_response)
                 self.memory.add_memory(message, full_response)
                 return
 
-            msg = response.get("message", {})
-            tool_calls = msg.get("tool_calls")
-
-            if tool_calls:
-                if on_tool_call:
-                    for tc in tool_calls:
-                        on_tool_call(tc.get("function", {}).get("name"), tc.get("function", {}).get("arguments"))
-
-                messages = self._process_tool_calls(tool_calls, messages)
-                continue
-
-            content = msg.get("content", "")
-            if content:
-                yield content
-                self._add_to_history("assistant", content)
-                self.memory.add_memory(message, content)
-            return
-
-        yield "[Max tool iterations reached]"
+        yield {"type": "content", "text": "[Max tool iterations reached]"}
 
     def chat_streaming(self, message: str):
         system_prompt = self._build_system_prompt(message)
@@ -164,83 +184,3 @@ Use web_search for current info, then give a hilarious response based on what yo
             yield content
         self._add_to_history("assistant", full_response)
         self.memory.add_memory(message, full_response)
-
-
-if __name__ == "__main__":
-    coeus = Coeus()
-
-    print("Coeus initialized with tools:", coeus.tools.list_tools())
-    print("Commands: /clear, /reset, /count, /tools, /notools")
-    print("RAG: /load, /docs, /cleardocs, /add <path>")
-
-    # Auto-load documents on startup
-    result = coeus.load_documents()
-    if result.get("loaded"):
-        print(f"Loaded {len(result['loaded'])} documents ({result['total_chunks']} chunks)")
-
-    use_tools = True
-
-    while True:
-        user_input = input("\nYou: ")
-
-        if user_input.lower() == "/clear":
-            count = coeus.memory.clear_memories()
-            print(f"Cleared {count} long-term memories.")
-            continue
-        if user_input.lower() == "/reset":
-            coeus.clear_history()
-            print("Session history cleared.")
-            continue
-        if user_input.lower() == "/count":
-            print(f"Long-term memories: {coeus.memory.get_memory_count()}")
-            print(f"Session messages: {len(coeus.conversation_history)}")
-            print(f"RAG chunks: {coeus.rag.get_chunk_count()}")
-            continue
-        if user_input.lower() == "/tools":
-            print(f"Available tools: {coeus.tools.list_tools()}")
-            use_tools = True
-            print("Tool use: enabled")
-            continue
-        if user_input.lower() == "/notools":
-            use_tools = False
-            print("Tool use: disabled")
-            continue
-        if user_input.lower() == "/load":
-            result = coeus.load_documents()
-            print(f"Loaded: {result.get('loaded', [])}")
-            print(f"Skipped (already loaded): {result.get('skipped', [])}")
-            print(f"Total chunks: {result.get('total_chunks', 0)}")
-            continue
-        if user_input.lower() == "/docs":
-            docs = coeus.list_documents()
-            if docs:
-                for doc in docs:
-                    print(f"  - {doc['name']} ({doc['chunks']} chunks)")
-            else:
-                print("No documents loaded. Put files in ./documents and use /load")
-            continue
-        if user_input.lower() == "/cleardocs":
-            count = coeus.clear_rag_database()
-            print(f"Cleared {count} RAG chunks.")
-            continue
-        if user_input.lower().startswith("/add "):
-            path = user_input[5:].strip()
-            result = coeus.add_document(path)
-            if result.get("success"):
-                print(f"Added {result['document']} ({result['chunks_created']} chunks)")
-            else:
-                print(f"Error: {result.get('error')}")
-            continue
-
-        def tool_callback(name, args):
-            print(f"\n[Using tool: {name} with {args}]")
-
-        print("Coeus: ", end="")
-
-        if use_tools:
-            for chunk in coeus.chat(user_input, on_tool_call=tool_callback):
-                print(chunk, end="", flush=True)
-        else:
-            for chunk in coeus.chat_streaming(user_input):
-                print(chunk, end="", flush=True)
-        print("")

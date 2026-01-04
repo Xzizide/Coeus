@@ -5,7 +5,7 @@ import requests
 from pathlib import Path
 from typing import Optional
 from datetime import datetime
-from tools import ToolRegistry
+from ai_logic.tools import ToolRegistry
 
 
 def register_calculator_tools(registry: ToolRegistry) -> None:

@@ -209,3 +209,6 @@ __marimo__/
 chroma_db/
 chroma_rag_db/
 documents/
+temp_tts_full.wav
+tts_config.json
+voice_samples/
