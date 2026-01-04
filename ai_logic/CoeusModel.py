@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from memory import ConversationMemory
 from tools import ToolRegistry
 from builtin_tools import register_all_builtin_tools
+from rag import DocumentRAG
 
 load_dotenv()
 
@@ -19,6 +20,7 @@ Use web_search for current info, then give a hilarious response based on what yo
         register_all_builtin_tools(self.tools)
         self.conversation_history = []
         self.max_history_turns = max_history_turns
+        self.rag = DocumentRAG()
 
     def add_tool(self, name, description, parameters, function, required=None):
         self.tools.add_tool(name, description, parameters, function, required)
@@ -32,12 +34,38 @@ Use web_search for current info, then give a hilarious response based on what yo
             self.conversation_history = self.conversation_history[-self.max_history_turns * 2:]
 
     def _build_system_prompt(self, user_message: str) -> str:
+        prompt = self.base_system_prompt
+
+        # Add RAG context if documents exist
+        if self.rag.get_chunk_count() > 0:
+            relevant_docs = self.rag.search_documents(user_message, n_results=5)
+            rag_context = self.rag.format_context_for_prompt(relevant_docs)
+            if rag_context:
+                prompt += f"\n\n{rag_context}"
+
+        # Add conversation memory context
         relevant_memories = self.memory.search_memories(user_message, n_results=5)
         memory_context = self.memory.format_memories_for_prompt(relevant_memories)
-
         if memory_context:
-            return f"{self.base_system_prompt}\n\n{memory_context}"
-        return self.base_system_prompt
+            prompt += f"\n\n{memory_context}"
+
+        return prompt
+
+    # RAG helper methods
+    def load_documents(self):
+        return self.rag.load_documents()
+
+    def add_document(self, file_path: str):
+        return self.rag.add_document(file_path)
+
+    def search_documents(self, query: str, n_results: int = 5):
+        return self.rag.search_documents(query, n_results)
+
+    def list_documents(self):
+        return self.rag.list_documents()
+
+    def clear_rag_database(self):
+        return self.rag.clear_rag_database()
 
     def _process_tool_calls(self, tool_calls: list, messages: list) -> list:
         tool_call_list = []
@@ -141,7 +169,13 @@ if __name__ == "__main__":
     coeus = Coeus()
 
     print("Coeus initialized with tools:", coeus.tools.list_tools())
-    print("Commands: /clear (long-term memory), /reset (session), /count, /tools, /notools")
+    print("Commands: /clear, /reset, /count, /tools, /notools")
+    print("RAG: /load, /docs, /cleardocs, /add <path>")
+
+    # Auto-load documents on startup
+    result = coeus.load_documents()
+    if result.get("loaded"):
+        print(f"Loaded {len(result['loaded'])} documents ({result['total_chunks']} chunks)")
 
     use_tools = True
 
@@ -159,6 +193,7 @@ if __name__ == "__main__":
         if user_input.lower() == "/count":
             print(f"Long-term memories: {coeus.memory.get_memory_count()}")
             print(f"Session messages: {len(coeus.conversation_history)}")
+            print(f"RAG chunks: {coeus.rag.get_chunk_count()}")
             continue
         if user_input.lower() == "/tools":
             print(f"Available tools: {coeus.tools.list_tools()}")
@@ -168,6 +203,32 @@ if __name__ == "__main__":
         if user_input.lower() == "/notools":
             use_tools = False
             print("Tool use: disabled")
+            continue
+        if user_input.lower() == "/load":
+            result = coeus.load_documents()
+            print(f"Loaded: {result.get('loaded', [])}")
+            print(f"Skipped (already loaded): {result.get('skipped', [])}")
+            print(f"Total chunks: {result.get('total_chunks', 0)}")
+            continue
+        if user_input.lower() == "/docs":
+            docs = coeus.list_documents()
+            if docs:
+                for doc in docs:
+                    print(f"  - {doc['name']} ({doc['chunks']} chunks)")
+            else:
+                print("No documents loaded. Put files in ./documents and use /load")
+            continue
+        if user_input.lower() == "/cleardocs":
+            count = coeus.clear_rag_database()
+            print(f"Cleared {count} RAG chunks.")
+            continue
+        if user_input.lower().startswith("/add "):
+            path = user_input[5:].strip()
+            result = coeus.add_document(path)
+            if result.get("success"):
+                print(f"Added {result['document']} ({result['chunks_created']} chunks)")
+            else:
+                print(f"Error: {result.get('error')}")
             continue
 
         def tool_callback(name, args):
