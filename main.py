@@ -1,18 +1,7 @@
 from ai_logic.CoeusModel import Coeus
+from ai_logic.tts import VoiceTTS
 
-
-# TTS is loaded lazily to avoid slow startup
-tts_engine = None
-
-
-def get_tts():
-    """Lazy load TTS engine on first use."""
-    global tts_engine
-    if tts_engine is None:
-        from ai_logic.tts import VoiceTTS
-        tts_engine = VoiceTTS()
-    return tts_engine
-
+tts = VoiceTTS()
 
 def main():
     coeus = Coeus()
@@ -20,14 +9,14 @@ def main():
     print("Coeus initialized with tools:", coeus.tools.list_tools())
     print("Commands: /clear, /reset, /count")
     print("RAG: /load, /docs, /cleardocs, /add <path>")
-    print("TTS: /voice, /tts, /notts")
+    print("TTS: /tts, /notts")
 
     # Auto-load documents on startup
     result = coeus.load_documents()
     if result.get("loaded"):
         print(f"Loaded {len(result['loaded'])} documents ({result['total_chunks']} chunks)")
 
-    tts_enabled = False
+    tts_enabled = True
 
     while True:
         user_input = input("\nYou: ")
@@ -73,24 +62,9 @@ def main():
             continue
 
         # TTS Commands
-        if user_input.lower() == "/voice":
-            from ai_logic.tts import setup_voice_interactive
-            voice_path = setup_voice_interactive()
-            if voice_path:
-                tts = get_tts()
-                tts.set_speaker_wav(voice_path)
-                print(f"Voice configured: {voice_path}")
-                tts_enabled = True
-                print("TTS enabled.")
-            continue
-
         if user_input.lower() == "/tts":
-            tts = get_tts()
-            if tts.get_speaker_wav():
-                tts_enabled = True
-                print("TTS enabled.")
-            else:
-                print("No voice configured. Run /voice first.")
+            tts_enabled = True
+            print("TTS enabled.")
             continue
 
         if user_input.lower() == "/notts":
@@ -100,10 +74,14 @@ def main():
 
         print("Coeus: ", end="")
 
-        # Collect response for TTS
-        full_response = ""
-        sentence_buffer = ""
+        if tts_enabled:
+            try:
+                tts.stop()
+            except Exception as e:
+                print(f"\n[TTS Error: {e}]")
+                tts_enabled = False
 
+        full_response = ""
         for event in coeus.chat(user_input):
             if event["type"] == "tool_call":
                 print(f"\n[Using tool: {event['name']} with {event['args']}]")
@@ -112,44 +90,20 @@ def main():
                 print(text, end="", flush=True)
                 full_response += text
 
-                # Stream TTS on phrases (commas, periods, etc.)
+                # Stream to TTS in real-time
                 if tts_enabled:
-                    sentence_buffer += text
-                    # Break on any natural pause point
-                    break_chars = ['. ', '! ', '? ', ', ', ': ', '; ', '.\n', '!\n', '?\n', ',\n']
-                    while any(end in sentence_buffer for end in break_chars):
-                        # Find the first break point
-                        best_idx = len(sentence_buffer)
-                        for end in break_chars:
-                            idx = sentence_buffer.find(end)
-                            if idx != -1 and idx < best_idx:
-                                best_idx = idx + len(end)
-
-                        if best_idx < len(sentence_buffer) or best_idx == len(sentence_buffer):
-                            phrase = sentence_buffer[:best_idx].strip()
-                            sentence_buffer = sentence_buffer[best_idx:]
-
-                            # Only speak if we have enough content (at least 3 words)
-                            if phrase and len(phrase.split()) >= 3:
-                                try:
-                                    tts = get_tts()
-                                    tts.speak_and_play(phrase, streaming=False)
-                                except Exception as e:
-                                    print(f"\n[TTS Error: {e}]")
-                            elif phrase:
-                                # Too short, put it back
-                                sentence_buffer = phrase + " " + sentence_buffer
-                                break
-                        else:
-                            break
+                    try:
+                        tts.stream.feed(text)
+                    except Exception as e:
+                        print(f"\n[TTS Error: {e}]")
+                        tts_enabled = False
 
         print("")
 
-        # Speak any remaining text in buffer
-        if tts_enabled and sentence_buffer.strip():
+        # Play the complete response through TTS
+        if tts_enabled and full_response.strip():
             try:
-                tts = get_tts()
-                tts.speak_and_play(sentence_buffer.strip(), streaming=False)
+                tts.stream.play_async()
             except Exception as e:
                 print(f"[TTS Error: {e}]")
 
